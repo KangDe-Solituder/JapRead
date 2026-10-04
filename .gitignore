@@ -1,0 +1,61 @@
+# Local design references and prototype assets (production icons stay tracked)
+/DESIGN.md
+/design/
+/demo/
+/gpt_demo/
+/kimi_demo/
+/assets/logo-concepts/
+
+# Dependencies, package-manager caches and build output
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.pnp.*
+dist/
+target/
+.vite/
+coverage/
+*.tsbuildinfo
+/src-tauri/gen/
+# Keep package.json, package-lock.json, Cargo.toml and Cargo.lock for reproducible builds.
+
+# Local runtime data, downloaded books, backups and diagnostics
+.local/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+*.bak
+*.dmp
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+!.env.template
+.npmrc
+.netrc
+_netrc
+credentials.json
+secrets.json
+*.local.json
+*.local.toml
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo

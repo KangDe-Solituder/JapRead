@@ -1,0 +1,14 @@
+[package]
+name = "japread"
+version = "0.1.0"
+edition = "2021"
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+japread-sources = { path = "../crates/sources" }
+tauri = { version = "2", features = [] }
+japread-core = { path = "../crates/core" }
+serde_json = "1"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

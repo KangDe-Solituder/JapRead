@@ -1,0 +1,51 @@
+// Reading palettes inspired by OshiNote, with separate light/dark tones.
+export const palettes = [
+  {
+    id: "forest",
+    name: "墨绿",
+    note: "原本的阅读底色",
+    swatch: "#6d8d71",
+    light: ["#f6f5ef", "#fffefa", "#273c33", "#687568", "#365a43"],
+    dark: ["#181e1b", "#212823", "#dce2d5", "#a4afa1", "#b3c99c"],
+  },
+  {
+    id: "pink-cozy",
+    name: "柔粉",
+    note: "柔和的玫瑰色",
+    swatch: "#d66d9e",
+    light: ["#fff5f5", "#fffcfd", "#4a1942", "#8b6077", "#a83c70"],
+    dark: ["#261c24", "#32252e", "#f1dfeb", "#c4a6b9", "#eea7cb"],
+  },
+  {
+    id: "dark-night",
+    name: "夜紫",
+    note: "安静的鸢尾紫",
+    swatch: "#a78bfa",
+    light: ["#f5f2fa", "#fdfbff", "#392b49", "#766780", "#71519e"],
+    dark: ["#1f1a24", "#2d2435", "#e8e0f0", "#b6a8c5", "#c4b5fd"],
+  },
+  {
+    id: "soft-blue",
+    name: "雾蓝",
+    note: "清透的天空色",
+    swatch: "#60a5fa",
+    light: ["#f0f9ff", "#fbfdff", "#1e3a5f", "#5d7896", "#3268a4"],
+    dark: ["#19222c", "#222e3b", "#dce9f7", "#a5bad1", "#a6c9f6"],
+  },
+  {
+    id: "sakura",
+    name: "樱花",
+    note: "轻盈的花瓣色",
+    swatch: "#f09ab7",
+    light: ["#fff0f5", "#fffafd", "#5c2d42", "#916479", "#a8456b"],
+    dark: ["#291e23", "#37272e", "#f5e1e8", "#cbb0bc", "#f3b9cd"],
+  },
+  {
+    id: "rainy-cafe",
+    name: "雨日咖啡",
+    note: "木色与咖啡香",
+    swatch: "#8b7355",
+    light: ["#f5f0eb", "#fdfaf6", "#3d3229", "#7c6958", "#796047"],
+    dark: ["#211e1b", "#2d2823", "#e9e0d5", "#baac9d", "#d8bc99"],
+  },
+];

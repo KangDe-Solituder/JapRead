@@ -1,0 +1,324 @@
+/* Semantic theme colors also replace the prototype's fixed green surfaces. */
+:root[data-palette] {
+  --green: var(--button-bg);
+  --sage: color-mix(in srgb, var(--accent) 12%, var(--white));
+  --line: color-mix(in srgb, var(--ink) 19%, var(--paper));
+  --source-accent: var(--accent);
+}
+:root[data-palette] :is(.sidebar, .topbar) {
+  background: color-mix(in srgb, var(--paper) 75%, var(--white));
+}
+:root[data-palette]
+  :is(
+    .nav-item,
+    .breadcrumb b,
+    .sidebar-note > span,
+    .brand,
+    .chapter-button,
+    .text-button,
+    .text-link,
+    .learn-checkbox,
+    .source-button,
+    .annotation-tabs,
+    .japanese-body ruby rt
+  ) {
+  color: var(--accent);
+}
+:root[data-palette]
+  :is(.nav-item.active, .filter-tabs button.active, .primary, .brand-symbol) {
+  background: var(--button-bg);
+  color: var(--on-accent);
+}
+:root[data-palette]
+  :is(
+    .nav-item:hover,
+    .secondary:hover,
+    .theme-toggle:hover,
+    .chapter-button.active,
+    .selection-bar,
+    .source-button.active,
+    .tag,
+    .pill,
+    .source-note,
+    .home-hero,
+    .json-preview,
+    .knowledge-table th,
+    .context-box,
+    dialog blockquote
+  ) {
+  background: var(--sage);
+  color: var(--ink);
+  border-color: var(--line);
+}
+:root[data-palette] .annotation-tabs strong {
+  color: var(--accent);
+}
+:root[data-palette] #toast {
+  background: var(--button-bg);
+  color: var(--on-accent);
+}
+:root[data-palette] .context-box p {
+  color: var(--ink);
+}
+:root[data-palette]
+  :is(
+    .muted,
+    .eyebrow,
+    .brand small,
+    .workspace-label,
+    .breadcrumb,
+    .sidebar-note p,
+    .app-footer,
+    .field-label,
+    .field-label span,
+    .byline,
+    .chapter-nav > p,
+    .chapter-nav small,
+    .annotation-card .pronunciation,
+    .context-label,
+    .reader-help,
+    .knowledge-table td small,
+    .setting-detail,
+    .annotation-card .definition
+  ) {
+  color: var(--muted);
+}
+:root[data-palette]
+  :is(.reading-paper, .japanese-body, .real-book-card, dialog) {
+  color: var(--ink);
+}
+:root[data-palette]
+  :is(input:not([type="checkbox"]):not([type="range"]), textarea, select) {
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--line);
+}
+:root[data-palette] :is(input, textarea)::placeholder {
+  color: var(--muted);
+}
+:root[data-palette] :is(input[type="checkbox"], input[type="range"], progress) {
+  accent-color: var(--accent);
+}
+:root[data-palette] :is(input, textarea, select):focus {
+  border-color: var(--accent);
+}
+:root[data-palette] :is(.inline-word, .inline-word.active) {
+  background: var(--sage);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+:root[data-palette] .nav-divider {
+  background: var(--line);
+}
+:root[data-palette] .hero-book {
+  background: color-mix(in srgb, var(--accent) 32%, var(--white));
+  color: var(--ink);
+}
+:root[data-palette] .book-branch {
+  color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+:root[data-palette] .empty-state {
+  color: var(--muted);
+  border-color: var(--line);
+}
+:root[data-palette] .preferences-nav button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.appearance-studio .theme-options {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  width: 100%;
+  margin-top: 22px;
+}
+.appearance-studio {
+  display: block;
+}
+.appearance-studio header {
+  margin-bottom: 24px;
+}
+.appearance-studio .palette-workbench {
+  grid-column: 1/-1;
+  margin-top: 0;
+}
+:root[data-palette] .import-dialog {
+  --source-accent: var(--accent);
+}
+.appearance-studio .theme-options button {
+  flex: 1;
+  text-align: center;
+  border: 0;
+  padding: 10px 14px;
+  box-shadow: none;
+}
+.appearance-studio .theme-options button.selected {
+  background: var(--sage);
+  color: var(--ink);
+  box-shadow: 0 1px 4px #0001;
+}
+.appearance-studio .theme-options small {
+  font-size: 11px;
+  margin-top: 2px;
+}
+.palette-workbench {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 32px;
+  margin-top: 28px;
+  align-items: stretch;
+}
+.palette-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  gap: 12px;
+}
+.palette-heading h3 {
+  font-size: 14px;
+  font-weight: 500;
+}
+.palette-heading > span {
+  font-size: 12px;
+}
+.palette-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.palette-options button {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  text-align: left;
+}
+.palette-options button:hover {
+  background: var(--sage);
+}
+.palette-options button.selected {
+  background: var(--sage);
+  border-color: var(--accent);
+}
+.palette-dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px #0002;
+}
+.palette-dot > span {
+  font-size: 13px;
+  color: #fff;
+  background: #0008;
+  line-height: 19px;
+  width: 19px;
+  text-align: center;
+  border-radius: 50%;
+}
+.palette-options strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.palette-options small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.reading-preview {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.reading-preview h3 {
+  font: 25px/1.5 var(--serif);
+  margin: 16px 0;
+}
+.reading-preview > p {
+  font-family: var(--serif);
+  line-height: 2.5;
+  margin: 0 0 18px;
+}
+.reading-preview mark {
+  background: var(--sage);
+  color: var(--ink);
+  border-bottom: 1px solid var(--accent);
+  padding: 2px;
+}
+.reading-preview rt {
+  font-size: 0.5em;
+  color: var(--accent);
+}
+.preview-definition {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  margin-bottom: 18px;
+}
+.preview-definition > span {
+  color: var(--accent);
+}
+.preview-definition small {
+  margin-left: 10px;
+  color: var(--muted);
+}
+.preview-definition p {
+  font-size: 12px;
+  margin-top: 6px;
+  color: var(--muted);
+}
+.appearance-studio + .preference-pair .preference-card {
+  padding: 22px 28px;
+}
+.appearance-studio + .preference-pair h2 {
+  font-size: 21px;
+}
+@media (max-width: 1100px) {
+  .appearance-studio {
+    grid-template-columns: 1fr;
+  }
+  .appearance-studio .theme-options {
+    min-width: 0;
+  }
+  .palette-workbench {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+  .reading-preview {
+    padding: 22px;
+  }
+  .reading-preview > p {
+    margin-bottom: 12px;
+  }
+  .appearance-studio + .preference-pair {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 700px) {
+  .appearance-studio + .preference-pair {
+    grid-template-columns: 1fr;
+  }
+  .appearance-studio .theme-options {
+    max-width: none;
+  }
+  .appearance-studio .theme-options button {
+    padding: 10px 6px;
+  }
+  .palette-options small {
+    display: none;
+  }
+}
