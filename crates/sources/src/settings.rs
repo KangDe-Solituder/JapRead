@@ -52,6 +52,8 @@ struct LlmProfile {
 pub struct Settings {
     service: String,
 }
+#[cfg(all(test, windows))]
+pub(crate) static CREDENTIAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 impl Settings {
     pub fn new(namespace: &str) -> Self {
         Self {
@@ -325,7 +327,13 @@ impl Settings {
                     return Err("远程目录请使用普通目录名，以 / 分隔".into());
                 }
                 if config.password.is_empty() {
-                    config.password = self.dav()?.password;
+                    let old = self.dav()?;
+                    if old.endpoint != config.endpoint && !old.password.is_empty() {
+                        return Err(
+                            "WebDAV 地址已改变，请重新填写密码，避免将原密码发送给另一服务".into(),
+                        );
+                    }
+                    config.password = old.password;
                 }
                 self.write(
                     "webdav",
@@ -391,6 +399,9 @@ mod tests {
                 let _ = self.0.clear("llm");
             }
         }
+        let _serial = CREDENTIAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let guard = Cleanup(Settings::new(&format!(
             "test-profiles-{}",
             uuid::Uuid::new_v4()
@@ -443,6 +454,35 @@ mod tests {
         assert!(s.activate_profile("unknown").is_err());
         s.activate_profile(id).unwrap();
         assert_eq!(s.llm().unwrap().model, "local");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn webdav_password_never_follows_a_changed_endpoint() {
+        struct Cleanup(Settings);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.clear("webdav");
+            }
+        }
+        let _serial = CREDENTIAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let guard = Cleanup(Settings::new(&format!(
+            "test-webdav-{}",
+            uuid::Uuid::new_v4()
+        )));
+        let s = &guard.0;
+        let mut config = json!({"endpoint":"https://first.example/dav","username":"reader","password":"first-secret","remotePath":"JapRead"});
+        s.save("webdav", config.clone()).unwrap();
+        config["password"] = json!("");
+        s.save("webdav", config.clone()).unwrap();
+        assert_eq!(s.dav().unwrap().password, "first-secret");
+        config["endpoint"] = json!("https://second.example/dav");
+        assert!(s.save("webdav", config.clone()).is_err());
+        assert_eq!(s.dav().unwrap().endpoint, "https://first.example/dav");
+        config["password"] = json!("second-secret");
+        s.save("webdav", config).unwrap();
+        assert_eq!(s.dav().unwrap().password, "second-secret");
     }
     #[test]
     fn connection_urls_and_overrides_are_bounded() {

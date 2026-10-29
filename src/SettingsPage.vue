@@ -451,7 +451,7 @@ onMounted(() => perform(async () => apply(await api.settings())));
                     v-model="config.webdav.password"
                     type="password"
                     autocomplete="new-password"
-                    placeholder="留空保留已保存的密码"
+                    placeholder="同地址留空保留；换地址必须重填"
                 /></label>
               </div>
               <label class="field-label"

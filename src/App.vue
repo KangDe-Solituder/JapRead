@@ -8,7 +8,8 @@ import {
   ref,
   watch,
 } from "vue";
-import { api } from "./api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { api, desktop } from "./api";
 import SettingsPage from "./SettingsPage.vue";
 import {
   dark,
@@ -25,10 +26,16 @@ import type {
 } from "./types";
 import SentenceView from "./SentenceView.vue";
 import AozoraImport from "./AozoraImport.vue";
+import AnalysisPanel from "./AnalysisPanel.vue";
 const importMode = ref("aozora"),
-  sourceBusy = ref(false);
+  sourceBusy = ref(false),
+  analysisOpen = ref(false);
 async function sourceImported() {
   await refresh();
+}
+async function analysisSaved() {
+  await refresh();
+  message("章节理解与所选解读已保存");
 }
 async function openSource(document: Document) {
   await refresh();
@@ -89,10 +96,15 @@ const selectionBusy = ref(false),
   selectionError = ref("");
 const manualNote = ref(false);
 const selectionPreview = ref<Annotation>();
+const passagePreview = ref<Annotation[]>([]);
+const passageChosen = ref<boolean[]>([]);
+const passageSaving = ref(false);
 const selectionPending = ref(false);
 let selectionGeneration = 0;
 function discardSelection() {
   selectionGeneration++;
+  passagePreview.value = [];
+  passageChosen.value = [];
   selectionPreview.value = undefined;
   selectionError.value = "";
   selectionPending.value = false;
@@ -209,10 +221,16 @@ async function action(fn: () => Promise<void>) {
     busy.value = false;
   }
 }
+let refreshGeneration = 0,
+  navigationGeneration = 0;
 async function refresh() {
-  Object.assign(data, await api.snapshot());
+  const generation = ++refreshGeneration;
+  const snapshot = await api.snapshot();
+  if (generation === refreshGeneration) Object.assign(data, snapshot);
 }
 function navigate(to: string) {
+  navigationGeneration++;
+  restoring = false;
   discardSelection();
   saveVisiblePosition();
   page.value = to;
@@ -253,6 +271,7 @@ function onScroll() {
   scrollTimer = setTimeout(saveVisiblePosition, 250);
 }
 async function openDocument(d: Document, target?: Annotation) {
+  const generation = ++navigationGeneration;
   discardSelection();
   saveVisiblePosition();
   restoring = true;
@@ -261,37 +280,61 @@ async function openDocument(d: Document, target?: Annotation) {
   selectedId.value = target?.id || "";
   if (target) explanationOpen.value = true;
   const saved = data.progress.find((p) => p.documentId === d.id);
-  chapterId.value =
+  const requestedChapterId =
     (target
       ? d.chapters.find((c) =>
           c.sentences.some((s) => s.id === target.sentenceId),
         )?.id
       : saved?.chapterId) || d.chapters[0].id;
+  const targetChapter =
+    d.chapters.find((c) => c.id === requestedChapterId) || d.chapters[0];
+  chapterId.value = targetChapter.id;
   await nextTick();
+  if (generation !== navigationGeneration) return;
   const sentenceId =
-    target?.sentenceId || saved?.sentenceId || chapter.value!.sentences[0].id;
-  const el = document.getElementById("sentence-" + sentenceId);
+    target?.sentenceId ||
+    (saved?.chapterId === targetChapter.id ? saved.sentenceId : "") ||
+    targetChapter.sentences[0].id;
+  const anchoredSentence = targetChapter.sentences.some(
+    (s) => s.id === sentenceId,
+  )
+    ? sentenceId
+    : targetChapter.sentences[0].id;
+  const el = document.getElementById("sentence-" + anchoredSentence);
   el?.scrollIntoView({ block: "center" });
   if (target) {
     el?.classList.add("sentence-flash");
     setTimeout(() => el?.classList.remove("sentence-flash"), 1800);
   }
-  remember({ documentId: d.id, chapterId: chapterId.value, sentenceId });
-  setTimeout(() => (restoring = false), 350);
+  remember({
+    documentId: d.id,
+    chapterId: targetChapter.id,
+    sentenceId: anchoredSentence,
+  });
+  setTimeout(() => {
+    if (generation === navigationGeneration) restoring = false;
+  }, 350);
 }
 async function switchChapter(id: string) {
+  const targetChapter = current.value?.chapters.find((c) => c.id === id);
+  if (!targetChapter) return;
+  const generation = ++navigationGeneration;
+  const documentId = docId.value;
   saveVisiblePosition();
   restoring = true;
   chapterId.value = id;
   selectedId.value = "";
   await nextTick();
+  if (generation !== navigationGeneration) return;
   window.scrollTo(0, 0);
   remember({
-    documentId: docId.value,
+    documentId,
     chapterId: id,
-    sentenceId: chapter.value!.sentences[0].id,
+    sentenceId: targetChapter.sentences[0].id,
   });
-  setTimeout(() => (restoring = false), 350);
+  setTimeout(() => {
+    if (generation === navigationGeneration) restoring = false;
+  }, 350);
 }
 async function importText() {
   await action(async () => {
@@ -368,43 +411,128 @@ function captureSelection(): Annotation | undefined {
     learn: true,
   };
 }
+function capturePassage() {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed || !chapter.value) {
+    message("请先划选正文，可跨越多句话");
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  const element = (node: Node) =>
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as Element)
+      : node.parentElement;
+  const start = element(range.startContainer),
+    end = element(range.endContainer);
+  const body = start?.closest(".japanese-body");
+  if (!body || body !== end?.closest(".japanese-body")) {
+    message("请在同一章节的正文中选择");
+    return;
+  }
+  if (start?.closest("rt,rp") || end?.closest("rt,rp")) {
+    message("请选择正文文字，不要从注音开始或结束");
+    return;
+  }
+  const targets: { sentenceId: string; start: number; end: number }[] = [];
+  for (const sentence of chapter.value.sentences) {
+    const el = document.getElementById("sentence-" + sentence.id);
+    if (!el || !range.intersectsNode(el)) continue;
+    const part = document.createRange();
+    part.selectNodeContents(el);
+    if (range.compareBoundaryPoints(Range.START_TO_START, part) > 0)
+      part.setStart(range.startContainer, range.startOffset);
+    if (range.compareBoundaryPoints(Range.END_TO_END, part) < 0)
+      part.setEnd(range.endContainer, range.endOffset);
+    const quote = textWithoutRuby(part.cloneContents());
+    if (!quote.length) continue;
+    const before = document.createRange();
+    before.selectNodeContents(el);
+    before.setEnd(part.startContainer, part.startOffset);
+    const offset = Array.from(textWithoutRuby(before.cloneContents())).length;
+    targets.push({
+      sentenceId: sentence.id,
+      start: offset,
+      end: offset + Array.from(quote).length,
+    });
+  }
+  if (!targets.length) {
+    message("请选择正文文字");
+    return;
+  }
+  if (
+    targets.length > 30 ||
+    targets.reduce((n, t) => n + t.end - t.start, 0) > 12000
+  ) {
+    message("一次最多解析 30 句、12000 字，请缩小选区");
+    return;
+  }
+  return targets;
+}
 async function explainSelection() {
-  if (selectionBusy.value) return;
-  const target = captureSelection();
-  if (!target) return;
+  if (selectionBusy.value || passageSaving.value || !current.value) return;
+  const targets = capturePassage();
+  if (!targets) return;
+  const documentId = current.value.id,
+    targetChapter = chapterId.value;
   window.getSelection()?.removeAllRanges();
-  const targetChapter = chapterId.value;
-  const generation = ++selectionGeneration;
+  discardSelection();
+  const generation = selectionGeneration;
   selectedId.value = "";
   selectionBusy.value = true;
   selectionPending.value = true;
-  selectionError.value = "";
-  selectionPreview.value = undefined;
   explanationOpen.value = true;
   await nextTick();
-  document.querySelector(".drawer-scroll")?.scrollTo({ top: 0 });
+  document.querySelector(".drawer-right .drawer-scroll")?.scrollTo({ top: 0 });
   try {
-    const result = await api.explainSelection(
-      target.documentId,
-      targetChapter,
-      target,
-    );
+    const result = await api.explainPassage(documentId, targetChapter, targets);
     if (
       generation === selectionGeneration &&
-      docId.value === target.documentId &&
+      docId.value === documentId &&
       chapterId.value === targetChapter
-    )
-      selectionPreview.value = result.package.annotations[0];
+    ) {
+      passagePreview.value = result.package.annotations;
+      passageChosen.value = result.package.annotations.map(() => true);
+    }
   } catch (e) {
     if (
       generation === selectionGeneration &&
-      docId.value === target.documentId &&
+      docId.value === documentId &&
       chapterId.value === targetChapter
     )
       selectionError.value = e instanceof Error ? e.message : String(e);
   } finally {
     selectionBusy.value = false;
-    selectionPending.value = false;
+    if (generation === selectionGeneration) selectionPending.value = false;
+  }
+}
+async function savePassage() {
+  if (passageSaving.value || !current.value) return;
+  const annotations = passagePreview.value.filter(
+    (_, i) => passageChosen.value[i],
+  );
+  if (!annotations.length) return;
+  const generation = selectionGeneration;
+  passageSaving.value = true;
+  try {
+    const result = await api.importAnnotations({
+      schemaVersion: 1,
+      documentId: current.value.id,
+      version: current.value.version,
+      annotations,
+    });
+    await refresh();
+    if (generation === selectionGeneration) {
+      passagePreview.value = passagePreview.value.filter(
+        (_, i) => !passageChosen.value[i],
+      );
+      passageChosen.value = passagePreview.value.map(() => true);
+    }
+    message(`已保存 ${result.added} 条解读，已有解读保留原内容`);
+  } catch (e) {
+    if (generation === selectionGeneration)
+      selectionError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    passageSaving.value = false;
   }
 }
 function addManualNote() {
@@ -541,6 +669,9 @@ async function copyJson() {
     message("无法访问剪贴板，请在文本框内全选复制");
   }
 }
+let disposeCloseListener: (() => void) | undefined,
+  closeReady = false,
+  unmounted = false;
 onMounted(async () => {
   try {
     await refresh();
@@ -551,10 +682,29 @@ onMounted(async () => {
   }
   window.addEventListener("scroll", onScroll, { passive: true });
   window.addEventListener("keydown", closeDrawers);
+  window.addEventListener("pagehide", saveVisiblePosition);
+  if (desktop) {
+    const appWindow = getCurrentWindow();
+    const unlisten = await appWindow.onCloseRequested(async (event) => {
+      if (closeReady) return;
+      event.preventDefault();
+      clearTimeout(scrollTimer);
+      saveVisiblePosition();
+      await progressQueue;
+      closeReady = true;
+      await appWindow.close();
+    });
+    if (unmounted) unlisten();
+    else disposeCloseListener = unlisten;
+  }
 });
 onUnmounted(() => {
+  unmounted = true;
+  saveVisiblePosition();
   window.removeEventListener("scroll", onScroll);
   window.removeEventListener("keydown", closeDrawers);
+  window.removeEventListener("pagehide", saveVisiblePosition);
+  disposeCloseListener?.();
   clearTimeout(scrollTimer);
   clearTimeout(toastTimer);
   clearTimeout(drawerScrollTimer);
@@ -791,6 +941,9 @@ onUnmounted(() => {
               ← 我的书库 / {{ current.title }}
             </button>
             <div class="reader-tools">
+              <button class="button secondary" @click="analysisOpen = true">
+                解析章节
+              </button>
               <button
                 class="button secondary"
                 :aria-pressed="ruby"
@@ -906,6 +1059,17 @@ onUnmounted(() => {
                   · 原文 ↗</a
                 >
               </p>
+              <section v-if="chapter.analysis" class="chapter-understanding">
+                <span class="eyebrow">CHAPTER UNDERSTANDING</span>
+                <h2>{{ chapter.analysis.mainIdea }}</h2>
+                <p>{{ chapter.analysis.overview }}</p>
+                <ul>
+                  <li v-for="point in chapter.analysis.keyPoints" :key="point">
+                    {{ point }}
+                  </li>
+                </ul>
+                <small>{{ chapter.analysis.model }} · 章节理解</small>
+              </section>
               <div
                 class="japanese-body"
                 lang="ja"
@@ -933,7 +1097,9 @@ onUnmounted(() => {
                 </p>
               </details>
               <div class="reader-bottom">
-                <span>划选同一句内的文字，点击右下角「解读选中文字」。</span>
+                <span
+                  >划选一段正文（可跨句），点击右下角「解析选中段落」。</span
+                >
               </div>
             </article>
             <div
@@ -978,10 +1144,56 @@ onUnmounted(() => {
                   >
                     ＋ 添加注释
                   </button>
-                  <p v-if="selectionPending" role="status">正在解读所选文字…</p>
+                  <p v-if="selectionPending" role="status">
+                    正在结合上下文逐句解析…
+                  </p>
                   <p v-if="selectionError" role="alert" class="form-error">
                     {{ selectionError }}
                   </p>
+                  <section
+                    v-if="passagePreview.length"
+                    class="annotation-card passage-preview"
+                  >
+                    <span class="tag">段落解析 · 逐句预览</span>
+                    <p class="muted">
+                      结合上下文解读选中范围，勾选后保存为原句笔记。
+                    </p>
+                    <label
+                      v-for="(note, i) in passagePreview"
+                      :key="note.sentenceId"
+                      class="passage-note"
+                    >
+                      <span
+                        ><input
+                          type="checkbox"
+                          v-model="passageChosen[i]"
+                          :disabled="passageSaving"
+                        />
+                        第 {{ i + 1 }} 句</span
+                      >
+                      <blockquote lang="ja">{{ note.quote }}</blockquote>
+                      <p class="definition">{{ note.meaning }}</p>
+                      <p class="definition muted">{{ note.explanation }}</p>
+                    </label>
+                    <button
+                      class="button primary"
+                      :disabled="passageSaving || !passageChosen.some(Boolean)"
+                      @click="savePassage"
+                    >
+                      {{
+                        passageSaving
+                          ? "正在保存…"
+                          : `保存选中 ${passageChosen.filter(Boolean).length} 句`
+                      }}
+                    </button>
+                    <button
+                      class="text-button"
+                      :disabled="passageSaving"
+                      @click="discardSelection"
+                    >
+                      丢弃预览
+                    </button>
+                  </section>
                   <section v-if="selectionPreview" class="annotation-card">
                     <span class="tag">LLM 划词解读 · 未保存</span>
                     <div class="word-title">
@@ -1024,7 +1236,11 @@ onUnmounted(() => {
                     </button>
                   </section>
                   <section
-                    v-else-if="!selectionPreview && !selectionPending"
+                    v-else-if="
+                      !selectionPreview &&
+                      !selectionPending &&
+                      !passagePreview.length
+                    "
                     class="annotation-card"
                   >
                     <span class="tag">慢慢读，慢慢懂</span>
@@ -1037,7 +1253,12 @@ onUnmounted(() => {
                     </p>
                   </section>
                   <section
-                    v-if="!selected && !selectionPreview && !selectionPending"
+                    v-if="
+                      !selected &&
+                      !selectionPreview &&
+                      !selectionPending &&
+                      !passagePreview.length
+                    "
                     class="mini-card"
                   >
                     <span class="eyebrow">IN THIS CHAPTER</span
@@ -1059,10 +1280,10 @@ onUnmounted(() => {
             class="selection-action button primary"
             :class="{ 'with-explanation': explanationOpen }"
             @mousedown.prevent
-            :disabled="selectionBusy"
+            :disabled="selectionBusy || passageSaving"
             @click="explainSelection"
           >
-            {{ selectionBusy ? "正在解读…" : "解读选中文字 · LLM" }}
+            {{ selectionBusy ? "正在解读…" : "解析选中段落 · LLM" }}
           </button>
         </template>
         <template v-else-if="page === 'knowledge'">
@@ -1352,5 +1573,16 @@ onUnmounted(() => {
       >
     </div>
   </dialog>
+  <AnalysisPanel
+    v-if="analysisOpen && current && chapter"
+    :document="current"
+    :initialChapterId="chapter.id"
+    @close="analysisOpen = false"
+    @saved="analysisSaved"
+    @settings="
+      analysisOpen = false;
+      navigate('settings');
+    "
+  />
   <div id="toast" :class="{ show: notice }" role="status">{{ notice }}</div>
 </template>

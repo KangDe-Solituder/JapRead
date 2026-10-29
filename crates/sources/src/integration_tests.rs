@@ -11,6 +11,11 @@ struct Mock {
 }
 impl Mock {
     fn start() -> Self {
+        Self::with_gate(None)
+    }
+    fn with_gate(
+        gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let stop = Arc::new(AtomicBool::new(false));
@@ -48,6 +53,10 @@ impl Mock {
                 stream.read_exact(&mut body).unwrap();
                 let (status, body) = match method {
                     "POST" => {
+                        if let Some((arrived, release)) = &gate {
+                            arrived.send(()).unwrap();
+                            release.recv_timeout(Duration::from_secs(10)).unwrap();
+                        }
                         assert!(lower.contains("authorization: bearer test-only-key"));
                         let request: Value = serde_json::from_slice(&body).unwrap();
                         if request["model"] == "unauthorized" {
@@ -73,7 +82,12 @@ impl Mock {
                                 request["messages"][1]["content"].as_str().unwrap()
                             })
                             .unwrap();
-                            let item = &source["sentences"][0];
+                            let chapter_mode = !source["chapter"].is_null();
+                            let item = if chapter_mode {
+                                &source["chapter"]["sentences"][0]
+                            } else {
+                                &source["sentences"][0]
+                            };
                             let quote = if request["model"] == "bad-quote" {
                                 "不存在"
                             } else {
@@ -81,7 +95,14 @@ impl Mock {
                             };
                             let focused = &source["selection"];
                             let occurrence = focused["occurrence"].as_u64().unwrap_or(1);
-                            let text=json!({"items":[{"sentenceId":item["id"],"quote":quote,"occurrence":occurrence,"kind":"词汇","reading":"ねこ","meaning":"猫","explanation":"测试语境"}]}).to_string();
+                            let items = json!([{"sentenceId":item["id"],"quote":quote,"occurrence":occurrence,"kind":"词汇","reading":"ねこ","meaning":"猫","explanation":"测试语境"}]);
+                            let text = if source["mode"] == "passage" {
+                                json!({"items":source["sentences"].as_array().unwrap().iter().map(|s|json!({"sentenceId":s["id"],"meaning":"逐句译文","explanation":"结合上下文的语法说明"})).collect::<Vec<_>>()}).to_string()
+                            } else if chapter_mode {
+                                json!({"analysis":{"mainIdea":"章节主旨","overview":"完整章节概述","keyPoints":["要点一","要点二"]},"items":items}).to_string()
+                            } else {
+                                json!({"items":items}).to_string()
+                            };
                             let result = if responses {
                                 json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":text}]}]})
                             } else {
@@ -153,6 +174,9 @@ impl Drop for Fixture {
 }
 #[test]
 fn windows_vault_llm_preview_and_webdav_roundtrip() {
+    let _serial = settings::CREDENTIAL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let mock = Mock::start();
     let namespace = format!("test-{}", uuid::Uuid::new_v4());
     let path = std::env::temp_dir().join(&namespace);
@@ -224,6 +248,80 @@ fn windows_vault_llm_preview_and_webdav_roundtrip() {
         assert!(app.dispatch("llm_selection", focused.clone()).is_err());
         focused["target"]["end"] = json!(999);
         assert!(app.dispatch("llm_selection", focused).is_err());
+        let passage_doc=app.dispatch("import_document",json!({"title":"选区测试","kind":"文章","chapters":[{"title":"正文","text":"猫😀は眠る。雨が降る。"}]})).unwrap();
+        let sentences = &passage_doc["chapters"][0]["sentences"];
+        let result=app.dispatch("llm_passage",json!({"documentId":passage_doc["id"],"chapterId":passage_doc["chapters"][0]["id"],"sentenceIds":[sentences[0]["id"],sentences[1]["id"]],"targets":[{"sentenceId":sentences[0]["id"],"start":1,"end":6},{"sentenceId":sentences[1]["id"],"start":0,"end":2}]})).unwrap();
+        assert_eq!(result["package"]["annotations"][0]["quote"], "😀は眠る。");
+        assert_eq!(result["package"]["annotations"][0]["start"], 1);
+        assert_eq!(result["package"]["annotations"][0]["end"], 6);
+        assert_eq!(result["package"]["annotations"][1]["quote"], "雨が");
+        assert_eq!(
+            app.dispatch("import_annotations", result["package"].clone())
+                .unwrap()["added"],
+            2
+        );
+        assert_eq!(
+            app.dispatch("import_annotations", result["package"].clone())
+                .unwrap()["added"],
+            0
+        );
+    }
+    for protocol in ["chat", "responses"] {
+        config["protocol"] = json!(protocol);
+        config["model"] = json!("test");
+        config["maxTokens"] = json!(2048);
+        app.dispatch("settings_save", json!({"section":"llm","config":config}))
+            .unwrap();
+        let created = app
+            .dispatch(
+                "analysis_task_create",
+                json!({"documentId":doc["id"],"chapterIds":[doc["chapters"][0]["id"]]}),
+            )
+            .unwrap();
+        let task_id = created["id"].as_str().unwrap();
+        let mut completed = None;
+        for _ in 0..100 {
+            let task = app
+                .dispatch("analysis_task_get", json!({"taskId":task_id}))
+                .unwrap();
+            if task["status"] == "completed" {
+                completed = Some(task);
+                break;
+            }
+            assert_ne!(task["status"], "failed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let completed = completed.expect("章节任务应完成");
+        assert_eq!(
+            completed["chapterResults"][0]["analysis"]["mainIdea"],
+            "章节主旨"
+        );
+        let saved = app
+            .dispatch(
+                "analysis_task_save",
+                json!({"taskId":task_id,"chapterIds":[doc["chapters"][0]["id"]],"package":completed["chapterResults"][0]["package"]}),
+            )
+            .unwrap();
+        assert_eq!(saved["status"], "saved");
+        let snapshot = app.dispatch("snapshot", json!({})).unwrap();
+        assert_eq!(
+            snapshot["annotations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|a| a["documentId"] == doc["id"])
+                .count(),
+            1
+        );
+        assert_eq!(
+            snapshot["documents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["id"] == doc["id"])
+                .unwrap()["chapters"][0]["analysis"]["mainIdea"],
+            "章节主旨"
+        );
     }
     config["maxTokens"] = json!(2048);
     for model in ["bad-quote", "unauthorized"] {
@@ -260,5 +358,76 @@ fn windows_vault_llm_preview_and_webdav_roundtrip() {
     assert_eq!(
         app.dispatch("settings_get", json!({})).unwrap()["hasApiKey"],
         false
+    );
+}
+
+#[test]
+fn pause_resume_inflight_and_save_while_next_chapter_runs() {
+    let _serial = settings::CREDENTIAL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let mock = Mock::with_gate(Some((arrived_tx, release_rx)));
+    let namespace = format!("test-task-{}", uuid::Uuid::new_v4());
+    let path = std::env::temp_dir().join(&namespace);
+    std::fs::create_dir_all(&path).unwrap();
+    let fixture = Fixture {
+        app: Some(
+            Application::open(&path.join("db.sqlite3"), &path.join("cache"), &namespace).unwrap(),
+        ),
+        path,
+        namespace,
+    };
+    let app = fixture.app.as_ref().unwrap();
+    app.dispatch("settings_save", json!({"section":"llm","config":{"endpoint":format!("http://{}",mock.address),"model":"test","protocol":"chat","apiKey":"test-only-key","maxTokens":2048}})).unwrap();
+    let doc = app.dispatch("import_document",json!({"title":"race test","kind":"文章","chapters":[{"title":"A","text":"猫。"},{"title":"B","text":"猫。"}]})).unwrap();
+    let ids = json!([doc["chapters"][0]["id"], doc["chapters"][1]["id"]]);
+    let task = app
+        .dispatch(
+            "analysis_task_create",
+            json!({"documentId":doc["id"],"chapterIds":ids}),
+        )
+        .unwrap();
+    let args = json!({"taskId":task["id"]});
+    arrived_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            app.dispatch("analysis_task_pause", args.clone()).unwrap()["status"],
+            "paused"
+        );
+        assert_eq!(
+            app.dispatch("analysis_task_resume", args.clone()).unwrap()["status"],
+            "running"
+        );
+    }
+    release_tx.send(()).unwrap();
+    arrived_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let first = app.dispatch("analysis_task_get", args.clone()).unwrap();
+    assert_eq!(first["chapterResults"].as_array().unwrap().len(), 1);
+    let saved = app.dispatch("analysis_task_save",json!({"taskId":task["id"],"chapterIds":[ids[0]],"package":first["chapterResults"][0]["package"]})).unwrap();
+    assert_eq!(saved["status"], "running");
+    assert_eq!(saved["savedChapterIds"], json!([ids[0]]));
+    release_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = app.dispatch("analysis_task_get", args.clone()).unwrap();
+        assert_ne!(current["status"], "failed");
+        if current["status"] == "completed" {
+            assert_eq!(current["chapterResults"].as_array().unwrap().len(), 2);
+            assert_eq!(app.dispatch("analysis_task_save",json!({"taskId":task["id"],"chapterIds":[ids[1]],"package":current["chapterResults"][1]["package"]})).unwrap()["status"],"saved");
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Wait for retirement before dropping its database fixture.
+    while !app.analysis_workers.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        arrived_rx.try_recv().is_err(),
+        "resume must not duplicate a paid request"
     );
 }

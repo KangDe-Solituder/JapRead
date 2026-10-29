@@ -319,6 +319,60 @@ html[data-motion="off"] *::after {
   padding: 2px 9px;
   border-radius: 4px;
 }
+.analysis-task-heading,
+.chapter-analysis-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.analysis-task-heading {
+  justify-content: space-between;
+  margin-top: 22px;
+}
+.analysis-task-heading p {
+  margin: 6px 0 0;
+}
+.chapter-analysis-result {
+  border-top: 1px solid var(--line);
+  margin-top: 28px;
+  padding-top: 24px;
+}
+.chapter-analysis-heading {
+  cursor: pointer;
+}
+.chapter-analysis-heading input {
+  margin-top: 8px;
+}
+.chapter-analysis-heading span {
+  flex: 1;
+}
+.chapter-analysis-heading small {
+  color: var(--muted);
+}
+.chapter-analysis-heading h3 {
+  margin: 5px 0 0;
+  font: 26px var(--serif);
+}
+.chapter-key-points {
+  padding-left: 22px;
+}
+.chapter-key-points li,
+.chapter-understanding li {
+  margin: 6px 0;
+}
+.chapter-understanding {
+  margin: 26px 0 34px;
+  padding: 22px 24px;
+  border-left: 3px solid var(--ink);
+  background: var(--sage);
+}
+.chapter-understanding h2 {
+  margin: 8px 0 12px;
+  font: 26px var(--serif);
+}
+.chapter-understanding small {
+  color: var(--muted);
+}
 .analysis-footer {
   position: sticky;
   bottom: -28px;
@@ -1387,4 +1441,19 @@ html[data-theme="dark"] .import-dialog {
   .import-tabs {
     gap: 18px;
   }
+}
+
+.passage-note {
+  display: block;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.passage-note blockquote {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+  line-height: 1.8;
+}
+.passage-preview > button {
+  margin-top: 14px;
 }

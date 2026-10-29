@@ -4,10 +4,18 @@ export interface Sentence {
   paragraph: number;
   readings?: { start: number; end: number; reading: string }[];
 }
+export interface ChapterAnalysis {
+  mainIdea: string;
+  overview: string;
+  keyPoints: string[];
+  model: string;
+  updatedAt: number;
+}
 export interface Chapter {
   id: string;
   title: string;
   sentences: Sentence[];
+  analysis?: ChapterAnalysis;
 }
 export interface Document {
   id: string;
@@ -90,6 +98,27 @@ export interface AnalysisResult {
   warnings?: string[];
   elapsedMs: number;
   usage: { inputTokens: number | null; outputTokens: number | null };
+}
+export interface ChapterAnalysisResult {
+  chapterId: string;
+  analysis: ChapterAnalysis;
+  package: ParsePackage;
+  warnings: string[];
+  elapsedMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+export interface AnalysisTask {
+  savedChapterIds: string[];
+  id: string;
+  documentId: string;
+  documentVersion: number;
+  chapterIds: string[];
+  chapterResults: ChapterAnalysisResult[];
+  status: "queued" | "running" | "paused" | "failed" | "completed" | "saved";
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface SourceAuthor {

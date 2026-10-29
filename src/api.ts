@@ -10,6 +10,7 @@ import type {
   LlmConfig,
   DavConfig,
   AnalysisResult,
+  AnalysisTask,
 } from "./types";
 export const desktop = isTauri();
 async function request<T>(op: string, payload: unknown = {}): Promise<T> {
@@ -26,6 +27,17 @@ async function request<T>(op: string, payload: unknown = {}): Promise<T> {
   return data as T;
 }
 export const api = {
+  explainPassage: (
+    documentId: string,
+    chapterId: string,
+    targets: { sentenceId: string; start: number; end: number }[],
+  ) =>
+    request<AnalysisResult>("llm_passage", {
+      documentId,
+      chapterId,
+      sentenceIds: targets.map((t) => t.sentenceId),
+      targets,
+    }),
   settings: () => request<ConnectionSettings>("settings_get"),
   saveLlmProfile: (
     id: string | null,
@@ -68,6 +80,28 @@ export const api = {
       documentId,
       chapterId,
       sentenceIds,
+    }),
+  createAnalysisTask: (documentId: string, chapterIds: string[]) =>
+    request<AnalysisTask>("analysis_task_create", { documentId, chapterIds }),
+  listAnalysisTasks: (documentId: string) =>
+    request<AnalysisTask[]>("analysis_task_list", { documentId }),
+  getAnalysisTask: (taskId: string) =>
+    request<AnalysisTask>("analysis_task_get", { taskId }),
+  pauseAnalysisTask: (taskId: string) =>
+    request<AnalysisTask>("analysis_task_pause", { taskId }),
+  resumeAnalysisTask: (taskId: string) =>
+    request<AnalysisTask>("analysis_task_resume", { taskId }),
+  deleteAnalysisTask: (taskId: string) =>
+    request<{ deleted: boolean }>("analysis_task_delete", { taskId }),
+  saveAnalysisTask: (
+    taskId: string,
+    chapterIds: string[],
+    packageData: ParsePackage,
+  ) =>
+    request<AnalysisTask>("analysis_task_save", {
+      taskId,
+      chapterIds,
+      package: packageData,
     }),
   testWebdav: () => request<{ message: string }>("webdav_test"),
   uploadBackup: () =>

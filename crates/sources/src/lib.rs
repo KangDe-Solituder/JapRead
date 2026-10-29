@@ -8,7 +8,7 @@ use scraper::{Html, Node, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     io::{Cursor, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -31,19 +31,193 @@ pub struct Application {
     settings: Arc<Mutex<settings::Settings>>,
     llm_request: Arc<Mutex<()>>,
     dav_request: Arc<Mutex<()>>,
+    analysis_workers: Arc<Mutex<HashSet<String>>>,
 }
 impl Application {
     pub fn open(db: &Path, cache: &Path, namespace: &str) -> Result<Self> {
+        let mut store = japread_core::Store::open(db)?;
+        store.recover_interrupted_tasks()?;
         Ok(Self {
-            db: Arc::new(Mutex::new(japread_core::Store::open(db)?)),
+            db: Arc::new(Mutex::new(store)),
             sources: Arc::new(Mutex::new(Aozora::new(cache)?)),
             settings: Arc::new(Mutex::new(settings::Settings::new(namespace))),
             llm_request: Arc::new(Mutex::new(())),
             dav_request: Arc::new(Mutex::new(())),
+            analysis_workers: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+    fn start_analysis_task(&self, task_id: &str) -> Result<()> {
+        {
+            let mut workers = self.analysis_workers.lock().map_err(err)?;
+            if !workers.insert(task_id.into()) {
+                return Ok(());
+            }
+        }
+        let app = self.clone();
+        let id = task_id.to_owned();
+        std::thread::spawn(move || {
+            loop {
+                let outcome = app.run_analysis_task(&id);
+                // Resume and worker retirement share this lock. A resume racing
+                // with a paused worker's exit must never lose its wake-up.
+                let Ok(mut workers) = app.analysis_workers.lock() else {
+                    return;
+                };
+                let Ok(mut db) = app.db.lock() else {
+                    workers.remove(&id);
+                    return;
+                };
+                if let Err(error) = outcome {
+                    let _ = db.fail_task(&id, &error);
+                } else if db
+                    .task(&id)
+                    .is_ok_and(|t| matches!(t.status.as_str(), "queued" | "running"))
+                {
+                    continue;
+                }
+                workers.remove(&id);
+                break;
+            }
+        });
+        Ok(())
+    }
+    fn run_analysis_task(&self, task_id: &str) -> Result<()> {
+        let task = {
+            let mut db = self.db.lock().map_err(err)?;
+            if db.task(task_id)?.status == "paused" {
+                return Ok(());
+            }
+            db.mark_task_running(task_id)?
+        };
+        let config = self.settings.lock().map_err(err)?.llm()?;
+        if config.endpoint.is_empty() {
+            return Err("请先在设置 → LLM 解析中保存连接配置".into());
+        }
+        let doc = self.db.lock().map_err(err)?.document(&task.document_id)?;
+        for chapter_id in &task.chapter_ids {
+            if task
+                .chapter_results
+                .iter()
+                .any(|result| &result.chapter_id == chapter_id)
+            {
+                continue;
+            }
+            let current = self.db.lock().map_err(err)?.task(task_id)?;
+            if current.status == "paused" {
+                return Ok(());
+            }
+            if current.status != "running" {
+                return Err("分析任务已被其他操作停止".into());
+            }
+            let chapter = doc
+                .chapters
+                .iter()
+                .find(|chapter| &chapter.id == chapter_id)
+                .ok_or("分析任务章节不存在")?;
+            let result = {
+                let _guard = self.llm_request.lock().map_err(err)?;
+                if self.db.lock().map_err(err)?.task(task_id)?.status == "paused" {
+                    return Ok(());
+                }
+                llm::analyze_chapter(config.clone(), &doc, chapter)?
+            };
+            let completed = japread_core::ChapterAnalysisResult {
+                chapter_id: chapter_id.clone(),
+                analysis: serde_json::from_value(result["analysis"].clone()).map_err(err)?,
+                package: serde_json::from_value(result["package"].clone()).map_err(err)?,
+                warnings: serde_json::from_value(result["warnings"].clone()).map_err(err)?,
+                elapsed_ms: result["elapsedMs"].as_u64().unwrap_or(0),
+                input_tokens: result["usage"]["inputTokens"].as_u64(),
+                output_tokens: result["usage"]["outputTokens"].as_u64(),
+            };
+            self.db
+                .lock()
+                .map_err(err)?
+                .complete_chapter(task_id, completed)?;
+        }
+        Ok(())
     }
     pub fn dispatch(&self, op: &str, payload: Value) -> Result<Value> {
         match op {
+            "analysis_task_create" => {
+                let document_id = payload["documentId"].as_str().ok_or("缺少作品 ID")?;
+                let chapter_ids: Vec<String> =
+                    serde_json::from_value(payload["chapterIds"].clone())
+                        .map_err(|_| "缺少章节列表")?;
+                let task = {
+                    let mut db = self.db.lock().map_err(err)?;
+                    let doc = db.document(document_id)?;
+                    if db.tasks_for_document(document_id)?.iter().any(|task| {
+                        task.status != "saved"
+                            && task.chapter_ids.iter().any(|id| chapter_ids.contains(id))
+                    }) {
+                        return Err("所选章节已有未保存的分析任务，请继续或清理该任务".into());
+                    }
+                    db.create_task(document_id, doc.version, chapter_ids)?
+                };
+                self.start_analysis_task(&task.id)?;
+                return Ok(json!(task));
+            }
+            "analysis_task_list" => {
+                return Ok(json!(self.db.lock().map_err(err)?.tasks_for_document(
+                    payload["documentId"].as_str().ok_or("缺少作品 ID")?
+                )?));
+            }
+            "analysis_task_get" => {
+                return Ok(json!(self
+                    .db
+                    .lock()
+                    .map_err(err)?
+                    .task(payload["taskId"].as_str().ok_or("缺少任务 ID")?)?));
+            }
+            "analysis_task_pause" => {
+                return Ok(json!(self
+                    .db
+                    .lock()
+                    .map_err(err)?
+                    .pause_task(payload["taskId"].as_str().ok_or("缺少任务 ID")?)?));
+            }
+            "analysis_task_resume" => {
+                let task_id = payload["taskId"].as_str().ok_or("缺少任务 ID")?;
+                let task = {
+                    let workers = self.analysis_workers.lock().map_err(err)?;
+                    let mut db = self.db.lock().map_err(err)?;
+                    let current = db.task(task_id)?;
+                    let task = match current.status.as_str() {
+                        "paused" | "failed" => db.resume_task(task_id)?,
+                        "queued" => current,
+                        _ => return Err("当前分析任务无需继续".into()),
+                    };
+                    if workers.contains(task_id) {
+                        db.mark_task_running(task_id)?
+                    } else {
+                        task
+                    }
+                };
+                self.start_analysis_task(&task.id)?;
+                return Ok(json!(task));
+            }
+            "analysis_task_delete" => {
+                let task_id = payload["taskId"].as_str().ok_or("缺少任务 ID")?;
+                let task = self.db.lock().map_err(err)?.task(task_id)?;
+                if ["queued", "running"].contains(&task.status.as_str()) {
+                    return Err("请先暂停分析任务，再清理记录".into());
+                }
+                self.db.lock().map_err(err)?.delete_task(task_id)?;
+                return Ok(json!({"deleted":true}));
+            }
+            "analysis_task_save" => {
+                let chapter_ids: Vec<String> =
+                    serde_json::from_value(payload["chapterIds"].clone())
+                        .map_err(|_| "缺少待保存章节")?;
+                let package = serde_json::from_value(payload["package"].clone())
+                    .map_err(|_| "缺少有效解析包")?;
+                return Ok(json!(self.db.lock().map_err(err)?.save_task_results(
+                    payload["taskId"].as_str().ok_or("缺少任务 ID")?,
+                    &chapter_ids,
+                    &package
+                )?));
+            }
             "settings_get" => return self.settings.lock().map_err(err)?.public(),
             "llm_profile_save" => {
                 return self.settings.lock().map_err(err)?.save_profile(
@@ -78,7 +252,7 @@ impl Application {
                 settings.clear(payload["section"].as_str().ok_or("缺少设置分区")?)?;
                 return settings.public();
             }
-            "llm_analyze" | "llm_selection" | "llm_test" => {
+            "llm_analyze" | "llm_selection" | "llm_passage" | "llm_test" => {
                 let _guard = self
                     .llm_request
                     .try_lock()
@@ -122,7 +296,15 @@ impl Application {
                 if sentences.len() != requested.len() {
                     return Err("句子列表包含重复项或本章之外的句子".into());
                 }
-                let result = if op == "llm_selection" {
+                let result = if op == "llm_passage" {
+                    llm::analyze_passage_selection(
+                        config,
+                        &doc,
+                        chapter,
+                        &sentences,
+                        payload["targets"].clone(),
+                    )?
+                } else if op == "llm_selection" {
                     let target = serde_json::from_value(payload["target"].clone())
                         .map_err(|_| "缺少有效的划词范围")?;
                     llm::analyze_selection(config, &doc, &sentences, target)?
@@ -179,12 +361,24 @@ impl Application {
                 return Ok(json!({"document":doc,"existing":true}));
             }
             let input = self.sources.lock().map_err(err)?.import(work_id)?;
-            let doc = self
+            let imported = self
                 .db
                 .lock()
                 .map_err(err)?
-                .dispatch("import_document", input)?;
-            return Ok(json!({"document":doc,"existing":false}));
+                .dispatch("import_document", input);
+            match imported {
+                Ok(doc) => return Ok(json!({"document":doc,"existing":false})),
+                Err(error) if error.contains("duplicate source key") => {
+                    let doc = self
+                        .db
+                        .lock()
+                        .map_err(err)?
+                        .source_document(&key)?
+                        .ok_or("重复来源作品读取失败")?;
+                    return Ok(json!({"document":doc,"existing":true}));
+                }
+                Err(error) => return Err(error),
+            }
         }
         if op == "source_catalog" {
             if payload["provider"] != "aozora" {
@@ -518,40 +712,56 @@ impl Aozora {
             return Err("此作品未提供 XHTML 正文，请使用手动导入".into());
         }
         let path = self.dir.join(format!("{}.html", work.id));
-        // Selected full texts are immutable local snapshots, reused for retries/offline reading.
-        let bytes = if path.exists() {
-            std::fs::read(&path).map_err(err)?
-        } else {
-            self.fetch(&work.html_url, 10_000_000)?
+        let decode = |bytes: &[u8]| -> Result<Value> {
+            let encoding = Encoding::for_label(work.encoding.as_bytes())
+                .or_else(|| {
+                    if work.encoding == "ShiftJIS" {
+                        Some(encoding_rs::SHIFT_JIS)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or("不支持此作品的字符编码")?;
+            let (html, _, bad) = encoding.decode(bytes);
+            if bad {
+                return Err("作品字符编码异常，请改用手动导入".into());
+            }
+            let (chapters, gaiji) = parse_html(&html)?;
+            let page = Html::parse_document(&html);
+            let credits = page
+                .select(&Selector::parse(".bibliographical_information").unwrap())
+                .map(|e| e.text().collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(
+                json!({"title":work.title,"author":work.authors.join("、"),"kind":if work.category=="小说" {"小说"} else {"文章"},"url":work.url,"chapters":chapters,
+                "source":{"key":format!("aozora:{}",work.id),"provider":"aozora","workId":work.id,"ndc":work.ndc,"orthography":work.orthography,"htmlUrl":work.html_url,"updatedAt":work.updated_at,"importedAt":now(),"copyright":work.copyright,"credits":credits,
+                "notice":if gaiji>0 {format!("本书含 {gaiji} 处图片字／插图，以原站文字说明保留；可对照来源查看。原有注音不计入学习笔记。")} else {"保留原书注音；未执行 LLM 解析。".into()}}}),
+            )
         };
-        let encoding = Encoding::for_label(work.encoding.as_bytes())
-            .or_else(|| {
-                if work.encoding == "ShiftJIS" {
-                    Some(encoding_rs::SHIFT_JIS)
-                } else {
-                    None
+        if path.exists() {
+            let cached = std::fs::read(&path).map_err(err)?;
+            if let Ok(input) = decode(&cached) {
+                return Ok(input);
+            }
+        }
+        let bytes = self.fetch(&work.html_url, 10_000_000)?;
+        let input = decode(&bytes)?;
+        let temp = self
+            .dir
+            .join(format!("{}.{}.tmp", work.id, uuid::Uuid::new_v4()));
+        std::fs::write(&temp, &bytes).map_err(err)?;
+        if path.exists() {
+            if let Ok(existing) = std::fs::read(&path).map_err(err) {
+                if let Ok(input) = decode(&existing) {
+                    let _ = std::fs::remove_file(&temp);
+                    return Ok(input);
                 }
-            })
-            .ok_or("不支持此作品的字符编码")?;
-        let (html, _, bad) = encoding.decode(&bytes);
-        if bad {
-            return Err("作品字符编码异常，未保存，请改用手动导入".into());
+            }
+            std::fs::remove_file(&path).map_err(err)?;
         }
-        let (chapters, gaiji) = parse_html(&html)?;
-        let page = Html::parse_document(&html);
-        let credits = page
-            .select(&Selector::parse(".bibliographical_information").unwrap())
-            .map(|e| e.text().collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !path.exists() {
-            std::fs::write(&path, &bytes).map_err(err)?;
-        }
-        Ok(
-            json!({"title":work.title,"author":work.authors.join("、"),"kind":if work.category=="小说" {"小说"} else {"文章"},"url":work.url,"chapters":chapters,
-            "source":{"key":format!("aozora:{}",work.id),"provider":"aozora","workId":work.id,"ndc":work.ndc,"orthography":work.orthography,"htmlUrl":work.html_url,"updatedAt":work.updated_at,"importedAt":now(),"copyright":work.copyright,"credits":credits,
-            "notice":if gaiji>0 {format!("本书含 {gaiji} 处图片字／插图，以原站文字说明保留；可对照来源查看。原有注音不计入学习笔记。")} else {"保留原书注音；未执行 LLM 解析。".into()}}}),
-        )
+        std::fs::rename(&temp, &path).map_err(err)?;
+        Ok(input)
     }
 }
 
