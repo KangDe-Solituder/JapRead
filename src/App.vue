@@ -24,12 +24,23 @@ import type {
   Progress,
   Snapshot,
 } from "./types";
+import ParagraphAction from "./ParagraphAction.vue";
+import {
+  standardProfile,
+  cloneProfile,
+  type ReadingProfile,
+} from "./readingProfiles";
+import ReadingPanel from "./ReadingPanel.vue";
 import SentenceView from "./SentenceView.vue";
 import AozoraImport from "./AozoraImport.vue";
-import AnalysisPanel from "./AnalysisPanel.vue";
 const importMode = ref("aozora"),
-  sourceBusy = ref(false),
-  analysisOpen = ref(false);
+  sourceBusy = ref(false);
+const selectedParagraphs = ref<number[]>([]);
+const runProfile = ref<ReadingProfile>(cloneProfile(standardProfile));
+const doneParagraphs = ref<number[]>([]);
+const readingTargets = ref<number[]>([]);
+const readingsOpen = ref(false),
+  allReadings = ref(true);
 async function sourceImported() {
   await refresh();
 }
@@ -103,6 +114,7 @@ const selectionPending = ref(false);
 let selectionGeneration = 0;
 function discardSelection() {
   selectionGeneration++;
+  doneParagraphs.value = [];
   passagePreview.value = [];
   passageChosen.value = [];
   selectionPreview.value = undefined;
@@ -118,16 +130,30 @@ function readerBlankClicked(event: MouseEvent) {
   )
     return;
   if (!window.getSelection()?.isCollapsed) return;
+  selectedParagraphs.value = [];
   discardSelection();
   selectedId.value = "";
   explanationOpen.value = false;
 }
 function chooseAnnotation(a: Annotation) {
   discardSelection();
+  if (focusedParagraph.value !== null) {
+    focusedParagraph.value =
+      chapter.value?.sentences.find((s) => s.id === a.sentenceId)?.paragraph ??
+      null;
+  }
   selectedId.value = a.id;
   explanationOpen.value = true;
   nextTick(() =>
     document.querySelector(".drawer-scroll")?.scrollTo({ top: 0 }),
+  );
+}
+function backToNotes() {
+  selectedId.value = "";
+  nextTick(() =>
+    document
+      .querySelector(".drawer-right .drawer-scroll")
+      ?.scrollTo({ top: 0 }),
   );
 }
 const explanationScrolling = ref(false);
@@ -142,6 +168,11 @@ function drawerScrolled() {
 }
 watch([docId, chapterId], () => {
   discardSelection();
+  selectedParagraphs.value = chapter.value?.sentences.length
+    ? [chapter.value.sentences[0].paragraph]
+    : [];
+  readingsOpen.value = false;
+  focusedParagraph.value = null;
 });
 const current = computed(() =>
   data.documents.find((d) => d.id === docId.value),
@@ -152,11 +183,69 @@ const chapter = computed(() =>
 const selected = computed(() =>
   data.annotations.find((a) => a.id === selectedId.value),
 );
+const focusedParagraph = ref<number | null>(null);
 const chapterNotes = computed(() =>
   data.annotations.filter((a) =>
     chapter.value?.sentences.some((s) => s.id === a.sentenceId),
   ),
 );
+const displayedNotes = computed(() =>
+  focusedParagraph.value === null
+    ? chapterNotes.value
+    : chapterNotes.value.filter((a) =>
+        chapter.value?.sentences.some(
+          (s) =>
+            s.id === a.sentenceId && s.paragraph === focusedParagraph.value,
+        ),
+      ),
+);
+const noteGroups = computed(() =>
+  (chapter.value?.sentences || [])
+    .map((sentence, index) => ({
+      sentence,
+      index,
+      notes: displayedNotes.value
+        .filter((a) => a.sentenceId === sentence.id)
+        .sort((a, b) => a.start - b.start || a.end - b.end),
+    }))
+    .filter((group) => group.notes.length),
+);
+function paragraphNotes(paragraph: number) {
+  return notesByParagraph.value.get(paragraph) || [];
+}
+const notesByParagraph = computed(() => {
+  const sentenceParagraphs = new Map(
+    chapter.value?.sentences.map((s) => [s.id, s.paragraph]),
+  );
+  const groups = new Map<number, Annotation[]>();
+  for (const note of chapterNotes.value) {
+    const paragraph = sentenceParagraphs.get(note.sentenceId);
+    if (paragraph === undefined) continue;
+    const notes = groups.get(paragraph) || [];
+    notes.push(note);
+    groups.set(paragraph, notes);
+  }
+  return groups;
+});
+function openParagraphNotes(paragraph: number) {
+  discardSelection();
+  selectedId.value = "";
+  focusedParagraph.value = paragraph;
+  explanationOpen.value = true;
+  nextTick(() =>
+    document
+      .querySelector(".drawer-right .drawer-scroll")
+      ?.scrollTo({ top: 0 }),
+  );
+}
+function toggleReadingAids() {
+  ruby.value = !ruby.value;
+  if (!ruby.value) {
+    explanationOpen.value = false;
+    selectedId.value = "";
+    focusedParagraph.value = null;
+  }
+}
 const paragraphs = computed(() => {
   const groups: {
     paragraph: number;
@@ -289,6 +378,7 @@ async function openDocument(d: Document, target?: Annotation) {
   const targetChapter =
     d.chapters.find((c) => c.id === requestedChapterId) || d.chapters[0];
   chapterId.value = targetChapter.id;
+  selectedParagraphs.value = [targetChapter.sentences[0].paragraph];
   await nextTick();
   if (generation !== navigationGeneration) return;
   const sentenceId =
@@ -411,102 +501,26 @@ function captureSelection(): Annotation | undefined {
     learn: true,
   };
 }
-function capturePassage() {
-  const selection = window.getSelection();
-  if (!selection?.rangeCount || selection.isCollapsed || !chapter.value) {
-    message("请先划选正文，可跨越多句话");
-    return;
-  }
-  const range = selection.getRangeAt(0);
-  const element = (node: Node) =>
-    node.nodeType === Node.ELEMENT_NODE
-      ? (node as Element)
-      : node.parentElement;
-  const start = element(range.startContainer),
-    end = element(range.endContainer);
-  const body = start?.closest(".japanese-body");
-  if (!body || body !== end?.closest(".japanese-body")) {
-    message("请在同一章节的正文中选择");
-    return;
-  }
-  if (start?.closest("rt,rp") || end?.closest("rt,rp")) {
-    message("请选择正文文字，不要从注音开始或结束");
-    return;
-  }
-  const targets: { sentenceId: string; start: number; end: number }[] = [];
-  for (const sentence of chapter.value.sentences) {
-    const el = document.getElementById("sentence-" + sentence.id);
-    if (!el || !range.intersectsNode(el)) continue;
-    const part = document.createRange();
-    part.selectNodeContents(el);
-    if (range.compareBoundaryPoints(Range.START_TO_START, part) > 0)
-      part.setStart(range.startContainer, range.startOffset);
-    if (range.compareBoundaryPoints(Range.END_TO_END, part) < 0)
-      part.setEnd(range.endContainer, range.endOffset);
-    const quote = textWithoutRuby(part.cloneContents());
-    if (!quote.length) continue;
-    const before = document.createRange();
-    before.selectNodeContents(el);
-    before.setEnd(part.startContainer, part.startOffset);
-    const offset = Array.from(textWithoutRuby(before.cloneContents())).length;
-    targets.push({
-      sentenceId: sentence.id,
-      start: offset,
-      end: offset + Array.from(quote).length,
-    });
-  }
-  if (!targets.length) {
-    message("请选择正文文字");
-    return;
-  }
-  if (
-    targets.length > 30 ||
-    targets.reduce((n, t) => n + t.end - t.start, 0) > 12000
-  ) {
-    message("一次最多解析 30 句、12000 字，请缩小选区");
-    return;
-  }
-  return targets;
-}
-async function explainSelection() {
-  if (selectionBusy.value || passageSaving.value || !current.value) return;
-  const targets = capturePassage();
-  if (!targets) return;
-  const documentId = current.value.id,
-    targetChapter = chapterId.value;
-  window.getSelection()?.removeAllRanges();
+function selectParagraph(event: MouseEvent, paragraph: number) {
+  if (selectionBusy.value || passageSaving.value) return;
   discardSelection();
-  const generation = selectionGeneration;
-  selectedId.value = "";
-  selectionBusy.value = true;
-  selectionPending.value = true;
-  explanationOpen.value = true;
-  await nextTick();
-  document.querySelector(".drawer-right .drawer-scroll")?.scrollTo({ top: 0 });
-  try {
-    const result = await api.explainPassage(documentId, targetChapter, targets);
-    if (
-      generation === selectionGeneration &&
-      docId.value === documentId &&
-      chapterId.value === targetChapter
-    ) {
-      passagePreview.value = result.package.annotations;
-      passageChosen.value = result.package.annotations.map(() => true);
-    }
-  } catch (e) {
-    if (
-      generation === selectionGeneration &&
-      docId.value === documentId &&
-      chapterId.value === targetChapter
-    )
-      selectionError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    selectionBusy.value = false;
-    if (generation === selectionGeneration) selectionPending.value = false;
-  }
+  selectedParagraphs.value = event.ctrlKey
+    ? selectedParagraphs.value.includes(paragraph)
+      ? selectedParagraphs.value.filter((p) => p !== paragraph)
+      : [...selectedParagraphs.value, paragraph]
+    : [paragraph];
+}
+function runParagraphs(profile: ReadingProfile) {
+  if (!current.value || !chapter.value || !selectedParagraphs.value.length)
+    return;
+  runProfile.value = cloneProfile(profile);
+  readingTargets.value = paragraphs.value
+    .filter((p) => selectedParagraphs.value.includes(p.paragraph))
+    .map((p) => p.paragraph);
+  readingsOpen.value = true;
 }
 async function savePassage() {
-  if (passageSaving.value || !current.value) return;
+  if (selectionBusy.value || passageSaving.value || !current.value) return;
   const annotations = passagePreview.value.filter(
     (_, i) => passageChosen.value[i],
   );
@@ -941,15 +955,19 @@ onUnmounted(() => {
               ← 我的书库 / {{ current.title }}
             </button>
             <div class="reader-tools">
-              <button class="button secondary" @click="analysisOpen = true">
-                解析章节
+              <button
+                v-if="ruby && chapter.generatedReadings?.length"
+                class="text-button"
+                @click="allReadings = !allReadings"
+              >
+                {{ allReadings ? "全部注音" : "原书注音" }}
               </button>
               <button
                 class="button secondary"
                 :aria-pressed="ruby"
-                @click="ruby = !ruby"
+                @click="toggleReadingAids"
               >
-                あ {{ ruby ? "隐藏注音" : "显示注音" }}
+                {{ ruby ? "隐藏注释和注音" : "显示注释和注音" }}
               </button>
             </div>
           </div>
@@ -1075,18 +1093,77 @@ onUnmounted(() => {
                 lang="ja"
                 :style="{ fontSize: fontSize + 'px' }"
               >
-                <p v-for="group in paragraphs" :key="group.paragraph">
+                <p
+                  v-for="group in paragraphs"
+                  :key="group.paragraph"
+                  :id="`paragraph-${chapter.id}-${group.paragraph}`"
+                  class="reader-paragraph"
+                  :class="{
+                    'paragraph-selected': selectedParagraphs.includes(
+                      group.paragraph,
+                    ),
+                  }"
+                  :data-paragraph="group.paragraph"
+                  tabindex="0"
+                  :aria-label="`第 ${group.paragraph + 1} 段${selectedParagraphs.includes(group.paragraph) ? '，已选中' : ''}`"
+                  @click.stop="selectParagraph($event, group.paragraph)"
+                  @keydown.enter.prevent="
+                    selectParagraph(
+                      $event as unknown as MouseEvent,
+                      group.paragraph,
+                    )
+                  "
+                  @keydown.space.prevent="
+                    selectParagraph(
+                      $event as unknown as MouseEvent,
+                      group.paragraph,
+                    )
+                  "
+                >
                   <SentenceView
                     v-for="s in group.sentences"
                     :key="s.id"
                     :sentence="s"
+                    :generated-readings="
+                      allReadings
+                        ? chapter.generatedReadings?.filter(
+                            (r) => r.sentenceId === s.id,
+                          )
+                        : []
+                    "
                     :annotations="
-                      chapterNotes.filter((a) => a.sentenceId === s.id)
+                      ruby
+                        ? chapterNotes.filter((a) => a.sentenceId === s.id)
+                        : []
                     "
                     :active="selectedId"
                     :ruby="ruby"
                     @choose="chooseAnnotation"
                   />
+                  <button
+                    v-if="ruby && paragraphNotes(group.paragraph).length"
+                    class="paragraph-note-marker"
+                    :aria-label="`第 ${group.paragraph + 1} 段注释（${paragraphNotes(group.paragraph).length}）`"
+                    :title="`查看本段 ${paragraphNotes(group.paragraph).length} 条解读`"
+                    @click.stop="openParagraphNotes(group.paragraph)"
+                    @keydown.stop
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M5 4h14v12H9l-4 4V4zm4 4h6m-6 4h6"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      /></svg
+                    ><small>{{ paragraphNotes(group.paragraph).length }}</small>
+                  </button>
                 </p>
               </div>
               <details v-if="current.source" class="source-provenance">
@@ -1098,12 +1175,14 @@ onUnmounted(() => {
               </details>
               <div class="reader-bottom">
                 <span
-                  >划选一段正文（可跨句），点击右下角「解析选中段落」。</span
+                  >点击选择段落，Ctrl +
+                  点击可多选；点击空白取消。右下角选择模式，注音与解读一起处理。</span
                 >
               </div>
             </article>
             <div
               class="reader-drawer drawer-right"
+              v-show="ruby"
               :class="{ 'is-open': explanationOpen }"
             >
               <button
@@ -1177,7 +1256,11 @@ onUnmounted(() => {
                     </label>
                     <button
                       class="button primary"
-                      :disabled="passageSaving || !passageChosen.some(Boolean)"
+                      :disabled="
+                        selectionBusy ||
+                        passageSaving ||
+                        !passageChosen.some(Boolean)
+                      "
                       @click="savePassage"
                     >
                       {{
@@ -1210,6 +1293,14 @@ onUnmounted(() => {
                     </button>
                   </section>
                   <section v-if="selected" class="annotation-card">
+                    <button
+                      class="text-button back-to-notes"
+                      @click="backToNotes"
+                    >
+                      ← 返回{{
+                        focusedParagraph === null ? "本章" : "本段"
+                      }}笔记
+                    </button>
                     <span class="tag">{{ selected.kind }}</span>
                     <div class="word-title">
                       <h2>{{ selected.quote }}</h2>
@@ -1239,13 +1330,14 @@ onUnmounted(() => {
                     v-else-if="
                       !selectionPreview &&
                       !selectionPending &&
-                      !passagePreview.length
+                      !passagePreview.length &&
+                      !displayedNotes.length
                     "
                     class="annotation-card"
                   >
                     <span class="tag">慢慢读，慢慢懂</span>
                     <p class="definition">
-                      点击标记查看解释，或划选正文让 LLM
+                      点击标记查看解释，或选择段落让 LLM
                       解读。自己的笔记可通过「添加注释」保存。
                     </p>
                     <p class="reader-help">
@@ -1257,34 +1349,59 @@ onUnmounted(() => {
                       !selected &&
                       !selectionPreview &&
                       !selectionPending &&
-                      !passagePreview.length
+                      !passagePreview.length &&
+                      displayedNotes.length
                     "
-                    class="mini-card"
+                    class="sentence-notes"
                   >
-                    <span class="eyebrow">IN THIS CHAPTER</span
-                    ><strong>{{ chapterNotes.length }} 条语境笔记</strong
-                    ><button
-                      v-for="a in chapterNotes"
-                      :key="a.id"
-                      class="note-link"
-                      @click="chooseAnnotation(a)"
+                    <span class="eyebrow">{{
+                      focusedParagraph === null
+                        ? "IN THIS CHAPTER"
+                        : "IN THIS PARAGRAPH"
+                    }}</span
+                    ><strong>{{ displayedNotes.length }} 条语境笔记</strong>
+                    <article
+                      v-for="group in noteGroups"
+                      :key="group.sentence.id"
+                      class="sentence-note-card"
                     >
-                      {{ a.quote }}<small>{{ a.kind }}</small>
-                    </button>
+                      <span class="sentence-note-number"
+                        >第 {{ group.index + 1 }} 句</span
+                      >
+                      <p lang="ja" class="sentence-note-original">
+                        {{ group.sentence.text }}
+                      </p>
+                      <button
+                        v-for="a in group.notes"
+                        :key="a.id"
+                        class="sentence-note-link"
+                        @click="chooseAnnotation(a)"
+                      >
+                        <span class="sentence-note-kind"
+                          >{{ a.kind }} · 查看解读 →</span
+                        >
+                        <span
+                          v-if="a.quote !== group.sentence.text"
+                          lang="ja"
+                          >{{ a.quote }}</span
+                        >
+                        <span class="sentence-note-meaning">{{
+                          a.meaning
+                        }}</span>
+                      </button>
+                    </article>
                   </section>
                 </div>
               </aside>
             </div>
           </div>
-          <button
-            class="selection-action button primary"
+          <ParagraphAction
+            class="selection-action"
             :class="{ 'with-explanation': explanationOpen }"
-            @mousedown.prevent
-            :disabled="selectionBusy || passageSaving"
-            @click="explainSelection"
-          >
-            {{ selectionBusy ? "正在解读…" : "解析选中段落 · LLM" }}
-          </button>
+            :count="selectedParagraphs.length"
+            :disabled="selectionBusy || passageSaving || readingsOpen"
+            @run="runParagraphs"
+          />
         </template>
         <template v-else-if="page === 'knowledge'">
           <div class="page-heading">
@@ -1573,16 +1690,16 @@ onUnmounted(() => {
       >
     </div>
   </dialog>
-  <AnalysisPanel
-    v-if="analysisOpen && current && chapter"
+  <ReadingPanel
+    v-if="readingsOpen && current && chapter"
+    :key="chapter.id"
     :document="current"
-    :initialChapterId="chapter.id"
-    @close="analysisOpen = false"
-    @saved="analysisSaved"
-    @settings="
-      analysisOpen = false;
-      navigate('settings');
-    "
+    :chapter="chapter"
+    :paragraph-ids="readingTargets"
+    :profile="runProfile"
+    @close="readingsOpen = false"
+    @saved="refresh"
   />
+
   <div id="toast" :class="{ show: notice }" role="status">{{ notice }}</div>
 </template>

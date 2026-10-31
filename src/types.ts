@@ -11,7 +11,15 @@ export interface ChapterAnalysis {
   model: string;
   updatedAt: number;
 }
+export interface GeneratedReading {
+  sentenceId: string;
+  start: number;
+  end: number;
+  quote: string;
+  reading: string;
+}
 export interface Chapter {
+  generatedReadings?: GeneratedReading[];
   id: string;
   title: string;
   sentences: Sentence[];

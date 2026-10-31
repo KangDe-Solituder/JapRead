@@ -4,6 +4,7 @@ export default defineConfig({
   plugins: [vue()],
   clearScreen: false,
   server: {
+    watch: { ignored: ["**/target/**", "**/.local/**"] },
     port: 1420,
     strictPort: true,
     proxy: { "/api": "http://127.0.0.1:1421" },

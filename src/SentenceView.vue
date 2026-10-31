@@ -6,6 +6,7 @@ const props = defineProps<{
   annotations: Annotation[];
   active: string;
   ruby: boolean;
+  generatedReadings?: { start: number; end: number; reading: string }[];
 }>();
 const emit = defineEmits<{ choose: [annotation: Annotation] }>();
 const pieces = computed(() => {
@@ -21,6 +22,16 @@ const pieces = computed(() => {
         (a) => a.reading && a.start < r.end && a.end > r.start,
       ),
   );
+  const generated = (props.generatedReadings || []).filter(
+    (r) =>
+      !(props.sentence.readings || []).some(
+        (n) => n.start < r.end && n.end > r.start,
+      ) &&
+      !props.annotations.some(
+        (a) => a.reading && a.start < r.end && a.end > r.start,
+      ),
+  );
+  nativeReadings.push(...generated);
   nativeReadings.forEach((r) => {
     boundaries.add(r.start);
     boundaries.add(r.end);

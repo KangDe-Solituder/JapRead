@@ -252,6 +252,57 @@ impl Application {
                 settings.clear(payload["section"].as_str().ok_or("缺少设置分区")?)?;
                 return settings.public();
             }
+            "llm_paragraph" => {
+                let _guard = self
+                    .llm_request
+                    .try_lock()
+                    .map_err(|_| "已有 LLM 请求进行中")?;
+                let doc = self
+                    .db
+                    .lock()
+                    .map_err(err)?
+                    .document(payload["documentId"].as_str().ok_or("缺少作品")?)?;
+                let chapter = doc
+                    .chapters
+                    .iter()
+                    .find(|c| Some(c.id.as_str()) == payload["chapterId"].as_str())
+                    .ok_or("章节不存在")?;
+                let paragraph = payload["paragraph"].as_u64().ok_or("缺少段落")? as usize;
+                let context = payload["context"].as_u64().ok_or("缺少上下文段数")? as usize;
+                let mode = payload["mode"].as_str().ok_or("缺少处理模式")?;
+                if !["analysis", "readings"].contains(&mode) {
+                    return Err("处理模式无效".into());
+                }
+                let config = self.settings.lock().map_err(err)?.llm()?;
+                let config = settings::task_config(config, &payload["options"])?;
+                return llm::analyze_paragraph(
+                    config,
+                    &doc,
+                    chapter,
+                    paragraph,
+                    context,
+                    mode == "readings",
+                );
+            }
+            "llm_readings" => {
+                let _guard = self
+                    .llm_request
+                    .try_lock()
+                    .map_err(|_| "已有 LLM 请求进行中")?;
+                let doc = self
+                    .db
+                    .lock()
+                    .map_err(err)?
+                    .document(payload["documentId"].as_str().ok_or("缺少作品")?)?;
+                let chapter = doc
+                    .chapters
+                    .iter()
+                    .find(|c| Some(c.id.as_str()) == payload["chapterId"].as_str())
+                    .ok_or("章节不存在")?;
+                let first = payload["first"].as_u64().ok_or("缺少批次位置")? as usize;
+                let config = self.settings.lock().map_err(err)?.llm()?;
+                return llm::generate_readings(config, &doc, chapter, first);
+            }
             "llm_analyze" | "llm_selection" | "llm_passage" | "llm_test" => {
                 let _guard = self
                     .llm_request

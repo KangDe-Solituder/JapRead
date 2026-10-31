@@ -960,6 +960,8 @@ html[data-theme="dark"] dialog blockquote {
 }
 .reader-heading {
   margin-inline: 18px;
+  position: relative;
+  z-index: 41;
 }
 .reader-with-drawers > .reading-paper {
   margin: 0 18px;
@@ -986,6 +988,7 @@ html[data-theme="dark"] dialog blockquote {
 }
 .drawer-right {
   --drawer-width: 330px;
+  top: 180px;
   right: 0;
   clip-path: inset(-22px 0 -22px -58px);
 }
@@ -1456,4 +1459,109 @@ html[data-theme="dark"] .import-dialog {
 }
 .passage-preview > button {
   margin-top: 14px;
+}
+
+.reader-paragraph {
+  border-radius: 6px;
+  cursor: pointer;
+  outline-offset: 5px;
+}
+.reader-paragraph.paragraph-selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: -4px 0 var(--accent);
+}
+.paragraph-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 1000px) {
+  .profile-action.selection-action.with-explanation {
+    right: 18px;
+  }
+}
+
+.reader-paragraph {
+  position: relative;
+  padding-right: 52px;
+}
+.paragraph-note-marker {
+  position: absolute;
+  right: 0;
+  top: 0.3em;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 10px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--paper));
+  color: var(--accent);
+  cursor: pointer;
+  line-height: 1;
+}
+.paragraph-note-marker:hover {
+  background: color-mix(in srgb, var(--accent) 30%, var(--paper));
+}
+.paragraph-note-marker small {
+  font: 11px var(--sans);
+}
+.sentence-notes {
+  margin-top: 20px;
+}
+.sentence-notes > strong {
+  display: block;
+  margin: 8px 0 14px;
+}
+.sentence-note-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  margin: 12px 0;
+  padding: 16px;
+}
+.sentence-note-number {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sentence-note-original {
+  font-size: 16px;
+  line-height: 1.9;
+  margin: 10px 0 14px;
+  overflow-wrap: anywhere;
+}
+.sentence-note-link {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  cursor: pointer;
+}
+.sentence-note-link:hover {
+  color: var(--accent);
+}
+.sentence-note-kind {
+  font-size: 11px;
+  color: var(--accent);
+}
+.sentence-note-meaning {
+  font-size: 13px;
+  line-height: 1.7;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+}
+.back-to-notes {
+  display: block;
+  margin-bottom: 18px;
 }

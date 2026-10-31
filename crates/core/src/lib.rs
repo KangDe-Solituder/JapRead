@@ -40,8 +40,55 @@ pub struct ChapterAnalysis {
     pub updated_at: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneratedReading {
+    pub sentence_id: String,
+    pub start: usize,
+    pub end: usize,
+    pub quote: String,
+    pub reading: String,
+}
+pub fn is_kanji(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x323af)
+        || c == '々'
+}
+pub fn validate_readings(chapter: &Chapter, items: &[GeneratedReading]) -> Result<()> {
+    if items.len() > 100000 {
+        return Err("注音数量过多".into());
+    }
+    let mut occupied = std::collections::HashSet::new();
+    for r in items {
+        let s = chapter
+            .sentences
+            .iter()
+            .find(|s| s.id == r.sentence_id)
+            .ok_or("注音句子不存在")?;
+        let chars: Vec<_> = s.text.chars().collect();
+        if r.start >= r.end
+            || r.end > chars.len()
+            || chars[r.start..r.end].iter().collect::<String>() != r.quote
+            || !r.quote.chars().any(is_kanji)
+            || r.reading.is_empty()
+            || r.reading.chars().count() > 200
+            || !r
+                .reading
+                .chars()
+                .all(|c| matches!(c as u32, 0x3041..=0x3096 | 0x30a1..=0x30fa) || c == 'ー')
+            || s.readings
+                .iter()
+                .any(|n| n.start < r.end && n.end > r.start)
+            || (r.start..r.end).any(|i| !occupied.insert((&r.sentence_id, i)))
+        {
+            return Err("注音引用、假名或范围无效，或与原书／其他注音重叠".into());
+        }
+    }
+    Ok(())
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chapter {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generated_readings: Vec<GeneratedReading>,
     pub id: String,
     pub title: String,
     pub sentences: Vec<Sentence>,
@@ -613,6 +660,7 @@ impl Store {
             }
             let mut bytes = 0;
             for c in &d.chapters {
+                validate_readings(c, &c.generated_readings)?;
                 if c.id.is_empty() || !chapter_ids.insert(c.id.clone()) || c.sentences.is_empty() {
                     return Err("备份章节结构无效".into());
                 }
@@ -671,6 +719,7 @@ impl Store {
                 .cloned()
                 .map(|mut c| {
                     c.analysis = None;
+                    c.generated_readings.clear();
                     c
                 })
                 .collect::<Vec<_>>())
@@ -748,6 +797,57 @@ impl Store {
     }
     pub fn dispatch(&mut self, op: &str, payload: Value) -> Result<Value> {
         match op {
+            "readings_save" => {
+                let mut doc = self.document(payload["documentId"].as_str().ok_or("缺少作品")?)?;
+                if payload["version"].as_u64() != Some(doc.version as u64) {
+                    return Err("正文版本已变更".into());
+                }
+                let chapter = doc
+                    .chapters
+                    .iter_mut()
+                    .find(|c| Some(c.id.as_str()) == payload["chapterId"].as_str())
+                    .ok_or("章节不存在")?;
+                let items: Vec<GeneratedReading> = decode(payload["items"].clone())?;
+                validate_readings(chapter, &items)?;
+                let mut items = items;
+                if let Some(scope) = payload.get("paragraphIds") {
+                    let scope: Vec<usize> = decode(scope.clone())?;
+                    if scope.is_empty()
+                        || scope
+                            .iter()
+                            .any(|p| !chapter.sentences.iter().any(|s| s.paragraph == *p))
+                        || items.iter().any(|r| {
+                            !chapter
+                                .sentences
+                                .iter()
+                                .any(|s| s.id == r.sentence_id && scope.contains(&s.paragraph))
+                        })
+                    {
+                        return Err("注音超出所选段落".into());
+                    }
+                    items.extend(
+                        chapter
+                            .generated_readings
+                            .iter()
+                            .filter(|r| {
+                                chapter
+                                    .sentences
+                                    .iter()
+                                    .any(|s| s.id == r.sentence_id && !scope.contains(&s.paragraph))
+                            })
+                            .cloned(),
+                    );
+                }
+                validate_readings(chapter, &items)?;
+                chapter.generated_readings = items;
+                self.db
+                    .execute(
+                        "UPDATE documents SET body=? WHERE id=?",
+                        params![serde_json::to_string(&doc).map_err(err)?, doc.id],
+                    )
+                    .map_err(err)?;
+                return Ok(json!({"saved": true}));
+            }
             "snapshot" => {
                 let mut progress = self.all::<Progress>("progress")?;
                 progress.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
@@ -806,6 +906,7 @@ impl Store {
                     .into_iter()
                     .enumerate()
                     .map(|(i, c)| Chapter {
+                        generated_readings: vec![],
                         id: id(),
                         title: if c.title.trim().is_empty() {
                             format!("第 {} 章", i + 1)
@@ -1469,5 +1570,94 @@ mod tests {
         for url in ["javascript:alert(1)", "file:///C:/foo", "bad url"] {
             assert!(s.dispatch("import_document",json!({"title":"x","kind":"文章","url":url,"chapters":[{"title":"正文","text":"x"}]})).is_err());
         }
+    }
+}
+#[cfg(test)]
+mod reading_tests {
+    use super::*;
+    #[test]
+    fn generated_readings_roundtrip_validation_and_backup() {
+        let path = std::env::temp_dir().join(format!("japread-reading-{}.sqlite3", id()));
+        let mut store = Store::open(&path).unwrap();
+        let doc: Document = decode(store.dispatch("import_document", json!({"title":"注音测试","kind":"文章","chapters":[{"title":"一","text":"猫😀と今日。","readings":[{"start":0,"end":1,"reading":"ねこ"}]}]})).unwrap()).unwrap();
+        let ch = &doc.chapters[0];
+        let item = json!({"sentenceId":ch.sentences[0].id,"start":3,"end":5,"quote":"今日","reading":"きょう"});
+        let payload =
+            json!({"documentId":doc.id,"chapterId":ch.id,"version":1,"items":[item.clone()]});
+        store.dispatch("readings_save", payload.clone()).unwrap();
+        let mut bad = payload.clone();
+        bad["items"][0]["start"] = json!(2);
+        assert!(store.dispatch("readings_save", bad).is_err());
+        let mut bad = payload.clone();
+        bad["version"] = json!(2);
+        assert!(store.dispatch("readings_save", bad).is_err());
+        let mut bad = payload.clone();
+        bad["items"] = json!([item.clone(), item]);
+        assert!(store.dispatch("readings_save", bad).is_err());
+        let mut bad = payload.clone();
+        bad["items"][0] = json!({"sentenceId":ch.sentences[0].id,"start":0,"end":1,"quote":"猫","reading":"ねこ"});
+        assert!(store.dispatch("readings_save", bad).is_err());
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        let saved = store.document(&doc.id).unwrap();
+        assert_eq!(saved.chapters[0].generated_readings[0].reading, "きょう");
+        assert_eq!(saved.chapters[0].sentences[0].readings[0].reading, "ねこ");
+        assert!(store.all::<Annotation>("annotations").unwrap().is_empty());
+        let snapshot = store.dispatch("snapshot", json!({})).unwrap();
+        let mut other = Store::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        other.merge_snapshot(snapshot).unwrap();
+        assert_eq!(
+            other.document(&doc.id).unwrap().chapters[0]
+                .generated_readings
+                .len(),
+            1
+        );
+        let mut empty = payload;
+        empty["items"] = json!([]);
+        store.dispatch("readings_save", empty).unwrap();
+        assert!(store.document(&doc.id).unwrap().chapters[0]
+            .generated_readings
+            .is_empty());
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+#[cfg(test)]
+mod paragraph_reading_tests {
+    use super::*;
+    #[test]
+    fn newline_anchors_and_scoped_reading_save_preserve_other_paragraphs() {
+        let mut store = Store::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let doc:Document = decode(store.dispatch("import_document",json!({"title":"段落","kind":"文章","chapters":[{"title":"正文","text":"猫。眠る。\r\n\r\n犬。\n鳥。"}]})).unwrap()).unwrap();
+        let ch = &doc.chapters[0];
+        assert_eq!(
+            ch.sentences.iter().map(|s| s.paragraph).collect::<Vec<_>>(),
+            vec![0, 0, 1, 2]
+        );
+        let a = json!({"sentenceId":ch.sentences[0].id,"start":0,"end":1,"quote":"猫","reading":"ねこ"});
+        let b = json!({"sentenceId":ch.sentences[2].id,"start":0,"end":1,"quote":"犬","reading":"いぬ"});
+        let request = |scope: Vec<usize>, items: Value| json!({"documentId":doc.id,"chapterId":ch.id,"version":1,"paragraphIds":scope,"items":items});
+        store
+            .dispatch("readings_save", request(vec![0], json!([a.clone()])))
+            .unwrap();
+        store
+            .dispatch("readings_save", request(vec![1], json!([b])))
+            .unwrap();
+        assert_eq!(
+            store.document(&doc.id).unwrap().chapters[0]
+                .generated_readings
+                .len(),
+            2
+        );
+        assert!(store
+            .dispatch("readings_save", request(vec![1], json!([a])))
+            .is_err());
+        store
+            .dispatch("readings_save", request(vec![1], json!([])))
+            .unwrap();
+        assert_eq!(
+            store.document(&doc.id).unwrap().chapters[0].generated_readings[0].quote,
+            "猫"
+        );
     }
 }

@@ -134,3 +134,11 @@ watch(
   },
   { immediate: true },
 );
+
+const storedContext = Number(read("japread.paragraphContext", "1"));
+export const paragraphContext = ref(
+  Number.isInteger(storedContext) && storedContext >= 0 && storedContext <= 5
+    ? storedContext
+    : 1,
+);
+watch(paragraphContext, (v) => persist("japread.paragraphContext", String(v)));

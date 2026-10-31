@@ -328,10 +328,16 @@ onMounted(() => perform(async () => apply(await api.settings())));
       </template>
       <template v-else-if="tab === 'llm' && config">
         <section class="preference-card">
+          <h2>段落处理模式</h2>
+          <p>
+            阅读页右下角的“模式”可选择日常、深入或自定义。自定义可分别设置注音与解读的推理强度、输出上限、超时和上下文段数。
+          </p>
+        </section>
+        <section class="preference-card">
           <header>
             <span class="eyebrow">UNDERSTAND IN CONTEXT</span>
             <h2>连接你的语言模型</h2>
-            <p>阅读时划选词句获取解读，理解后再选择保留。</p>
+            <p>阅读时选择段落获取逐句解读或注音，检查后再保存。</p>
           </header>
           <div class="llm-profile-heading">
             <p class="muted">

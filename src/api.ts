@@ -1,5 +1,7 @@
+import type { TaskOptions } from "./readingProfiles";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  GeneratedReading,
   Annotation,
   Document,
   ParsePackage,
@@ -27,6 +29,55 @@ async function request<T>(op: string, payload: unknown = {}): Promise<T> {
   return data as T;
 }
 export const api = {
+  analyzeParagraph: (
+    documentId: string,
+    chapterId: string,
+    paragraph: number,
+    context: number,
+    options?: TaskOptions,
+  ) =>
+    request<AnalysisResult>("llm_paragraph", {
+      documentId,
+      chapterId,
+      paragraph,
+      context,
+      mode: "analysis",
+      options,
+    }),
+  readParagraph: (
+    documentId: string,
+    chapterId: string,
+    paragraph: number,
+    context: number,
+    options?: TaskOptions,
+  ) =>
+    request<{ items: GeneratedReading[] }>("llm_paragraph", {
+      documentId,
+      chapterId,
+      paragraph,
+      context,
+      mode: "readings",
+      options,
+    }),
+  generateReadings: (documentId: string, chapterId: string, first: number) =>
+    request<{ items: GeneratedReading[]; next: number; total: number }>(
+      "llm_readings",
+      { documentId, chapterId, first },
+    ),
+  saveReadings: (
+    documentId: string,
+    chapterId: string,
+    version: number,
+    items: GeneratedReading[],
+    paragraphIds?: number[],
+  ) =>
+    request("readings_save", {
+      documentId,
+      chapterId,
+      version,
+      items,
+      paragraphIds,
+    }),
   explainPassage: (
     documentId: string,
     chapterId: string,

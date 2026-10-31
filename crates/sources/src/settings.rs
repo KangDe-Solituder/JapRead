@@ -499,3 +499,89 @@ mod tests {
         assert!(validate_extra(r#"{"temperature":0.2}"#).is_ok());
     }
 }
+/// Apply validated per-request controls without persisting connection settings.
+pub fn task_config(mut c: LlmConfig, options: &Value) -> Result<LlmConfig> {
+    if options.is_null() {
+        return Ok(c);
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Options {
+        effort: String,
+        max_tokens: u32,
+        timeout_seconds: u64,
+    }
+    let o: Options = serde_json::from_value(options.clone()).map_err(|_| "单次任务参数无效")?;
+    if !["none", "low", "high"].contains(&o.effort.as_str())
+        || !(256..=32768).contains(&o.max_tokens)
+        || !(15..=240).contains(&o.timeout_seconds)
+    {
+        return Err("推理强度、输出上限或超时超出范围".into());
+    }
+    let mut extra = validate_extra(&c.extra_body)?;
+    for key in [
+        "reasoning",
+        "reasoning_effort",
+        "thinking",
+        "enable_thinking",
+    ] {
+        extra.as_object_mut().unwrap().remove(key);
+    }
+    if c.protocol == "responses" {
+        extra["reasoning"] = json!({"effort":o.effort});
+    } else if c.model.to_lowercase().contains("deepseek") {
+        extra["thinking"] = json!({"type":if o.effort=="none" {"disabled"}else{"enabled"}});
+        if o.effort != "none" {
+            extra["reasoning_effort"] = json!(o.effort);
+        }
+    } else {
+        if o.effort == "none" {
+            return Err(
+                "当前 Chat 服务的关闭推理参数尚未适配，请选 low/high 或使用支持的 Responses 接口"
+                    .into(),
+            );
+        }
+        extra["reasoning_effort"] = json!(o.effort);
+    }
+    c.extra_body = extra.to_string();
+    c.max_tokens = o.max_tokens;
+    c.timeout_seconds = o.timeout_seconds;
+    Ok(c)
+}
+#[cfg(test)]
+mod task_options_tests {
+    use super::*;
+    #[test]
+    fn per_task_options_replace_conflicting_controls_and_preserve_saved_config() {
+        let c = LlmConfig {
+            protocol: "responses".into(),
+            extra_body:
+                json!({"thinking":{"type":"enabled"},"reasoning_effort":"high","temperature":0.5})
+                    .to_string(),
+            ..Default::default()
+        };
+        let options = json!({"effort":"none","maxTokens":8000,"timeoutSeconds":120});
+        let derived = task_config(c.clone(), &options).unwrap();
+        let e: Value = serde_json::from_str(&derived.extra_body).unwrap();
+        assert_eq!(e["reasoning"]["effort"], "none");
+        assert!(e.get("thinking").is_none());
+        assert_eq!(e["temperature"], 0.5);
+        assert_eq!(c.max_tokens, 6000);
+        assert_eq!(derived.max_tokens, 8000);
+        let mut chat = c.clone();
+        chat.protocol = "chat".into();
+        chat.model = "deepseek-flash".into();
+        let off = task_config(chat, &options).unwrap();
+        let e: Value = serde_json::from_str(&off.extra_body).unwrap();
+        assert_eq!(e["thinking"]["type"], "disabled");
+        assert!(e.get("reasoning_effort").is_none());
+        for bad in [
+            json!({"effort":"max","maxTokens":8000,"timeoutSeconds":120}),
+            json!({"effort":"low","maxTokens":1000000,"timeoutSeconds":120}),
+            json!({"effort":"low","maxTokens":8000,"timeoutSeconds":0}),
+            json!({"effort":"low","maxTokens":8000,"timeoutSeconds":120,"endpoint":"https://example.invalid"}),
+        ] {
+            assert!(task_config(c.clone(), &bad).is_err());
+        }
+    }
+}
